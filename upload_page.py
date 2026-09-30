@@ -1,5 +1,4 @@
 """Upload evaluation data — same as Flask /upload (CSV or Excel)."""
-import io
 import streamlit as st
 import pandas as pd
 
@@ -8,7 +7,6 @@ def _analyze(comment, rating):
         from ml_engine import run_analysis
         return run_analysis(comment, rating)
     except Exception:
-        # simple rating-based fallback
         if rating >= 4:
             sent = "positive"
         elif rating <= 2:
@@ -125,7 +123,10 @@ Student identity columns are optional and stored as anonymous.
 
             db.commit()
         except Exception as e:
-            db.close()
+            try:
+                db.close()
+            except Exception:
+                pass
             st.error(f"Error processing file: {e}")
             return
         finally:
@@ -154,4 +155,3 @@ Student identity columns are optional and stored as anonymous.
                     st.cache_data.clear()
                 except Exception as e:
                     st.error(f"Retraining error: {e}")
-"
