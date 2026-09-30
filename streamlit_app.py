@@ -1,4 +1,4 @@
-"""EvalAI Streamlit — DB-linked, landing page, admin retrain (same as Flask)."""
+"""EvalAI Streamlit — DB-linked, landing, accounts, retrain (Flask parity)."""
 import os, sys, json
 from pathlib import Path
 import streamlit as st
@@ -58,8 +58,9 @@ except Exception:
     def get_site_settings():
         s = dict(DEFAULT_SETTINGS)
         try:
-            db = get_connection(); rows = db.execute("SELECT key, value FROM site_settings").fetchall()
-            for r in rows: s[r["key"]] = r["value"]
+            db = get_connection()
+            for r in db.execute("SELECT key, value FROM site_settings").fetchall():
+                s[r["key"]] = r["value"]
             db.close()
         except Exception: pass
         return s
@@ -72,6 +73,11 @@ except Exception:
             return sorted(names) if names else list(DEMO_LECTURERS)
         except Exception:
             return list(DEMO_LECTURERS)
+
+try:
+    from accounts_pages import page_accounts, page_change_password
+except Exception:
+    page_accounts = page_change_password = None
 
 def analyze_comment(comment, rating=3):
     try:
@@ -106,7 +112,7 @@ def load_feedback():
 
 def authenticate(username, password):
     db = get_connection(DATABASE_PATH)
-    row = db.execute("SELECT * FROM users WHERE username = ?", (username.strip(),)).fetchone()
+    row = db.execute("SELECT * FROM users WHERE lower(username) = ?", (username.strip().lower(),)).fetchone()
     db.close()
     if row and check_password_hash(row["password_hash"], password):
         return dict(row)
@@ -119,7 +125,6 @@ def load_metrics():
     return None
 
 def run_retrain():
-    """Same as Flask admin_retrain: train_models.main() then reload models."""
     from train_models import main as run_train
     run_train()
     try:
@@ -241,7 +246,10 @@ def main():
     user = st.session_state.user
     if user:
         st.sidebar.markdown(f"**{user.get('full_name') or user['username']}** ({user['role']})")
-        nav = ["Landing / Student evaluation", "Dashboard", "Lecturer report", "Sentiment analysis", "Model evaluation", "Logout"]
+        nav = ["Landing / Student evaluation", "Dashboard", "Lecturer report", "Sentiment analysis", "Model evaluation", "Change password"]
+        if user.get("role") == "administrator":
+            nav.insert(-1, "Accounts")
+        nav.append("Logout")
     else:
         nav = ["Landing / Student evaluation", "Staff login"]
     choice = st.sidebar.radio("Navigate", nav)
@@ -253,6 +261,10 @@ def main():
     elif choice == "Lecturer report": page_report()
     elif choice == "Sentiment analysis": page_sentiment()
     elif choice == "Model evaluation": page_model()
+    elif choice == "Accounts" and page_accounts:
+        page_accounts(get_connection, DATABASE_PATH)
+    elif choice == "Change password" and page_change_password:
+        page_change_password(get_connection, DATABASE_PATH)
 
 if __name__ == "__main__":
     main()
