@@ -11,6 +11,13 @@ sys.path.insert(0, str(BASE))
 DATA = BASE / "data"
 DATA.mkdir(exist_ok=True)
 
+# Rebuild feedback.db from original seed SQL when missing/empty
+try:
+    from seed_db import ensure_database
+    ensure_database()
+except Exception:
+    pass
+
 try:
     from db import (
         DATABASE_PATH, DEMO_LECTURERS, DEFAULT_SETTINGS,
@@ -46,14 +53,6 @@ except Exception:
         db.execute("CREATE TABLE IF NOT EXISTS site_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
         for k, v in DEFAULT_SETTINGS.items():
             db.execute("INSERT OR IGNORE INTO site_settings (key, value) VALUES (?, ?)", (k, v))
-        if db.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0:
-            for u, p, r, ln, fn in [
-                ("admin", "admin123", "administrator", None, "System Administrator"),
-                ("okafor", "lecturer123", "lecturer", "Dr. Okafor", "Dr. Okafor"),
-                ("adeyemi", "lecturer123", "lecturer", "Dr. Adeyemi", "Dr. Adeyemi"),
-            ]:
-                db.execute("INSERT INTO users (username, password_hash, role, lecturer_name, full_name) VALUES (?,?,?,?,?)",
-                           (u, generate_password_hash(p), r, ln, fn))
         db.commit(); db.close()
     def get_site_settings():
         s = dict(DEFAULT_SETTINGS)
@@ -162,14 +161,15 @@ def page_landing():
 def page_login():
     st.header("Staff login")
     with st.form("login"):
-        u = st.text_input("Username"); p = st.text_input("Password", type="password")
+        u = st.text_input("Username")
+        p = st.text_input("Password", type="password")
         if st.form_submit_button("Sign in", use_container_width=True):
             user = authenticate(u, p)
             if user:
-                st.session_state.user = user; st.rerun()
+                st.session_state.user = user
+                st.rerun()
             else:
                 st.error("Invalid username or password.")
-    st.caption("Demo: admin / admin123 · lecturers: okafor / lecturer123")
 
 def page_dashboard():
     st.header("Dashboard")
@@ -241,6 +241,11 @@ def page_model():
 def main():
     if "user" not in st.session_state:
         st.session_state.user = None
+    try:
+        from seed_db import ensure_database
+        ensure_database()
+    except Exception:
+        pass
     init_db(DATABASE_PATH)
     st.sidebar.title("EvalAI")
     user = st.session_state.user
