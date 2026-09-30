@@ -1,4 +1,4 @@
-"""EvalAI Streamlit — DB-linked, landing, accounts, retrain (Flask parity)."""
+"""EvalAI Streamlit — DB-linked, landing, accounts, upload, retrain (Flask parity)."""
 import os, sys, json
 from pathlib import Path
 import streamlit as st
@@ -11,7 +11,6 @@ sys.path.insert(0, str(BASE))
 DATA = BASE / "data"
 DATA.mkdir(exist_ok=True)
 
-# Rebuild feedback.db from original seed SQL when missing/empty
 try:
     from seed_db import ensure_database
     ensure_database()
@@ -77,6 +76,11 @@ try:
     from accounts_pages import page_accounts, page_change_password
 except Exception:
     page_accounts = page_change_password = None
+
+try:
+    from upload_page import page_upload
+except Exception:
+    page_upload = None
 
 def analyze_comment(comment, rating=3):
     try:
@@ -253,8 +257,20 @@ def main():
         st.sidebar.markdown(f"**{user.get('full_name') or user['username']}** ({user['role']})")
         nav = ["Landing / Student evaluation", "Dashboard", "Lecturer report", "Sentiment analysis", "Model evaluation", "Change password"]
         if user.get("role") == "administrator":
-            nav.insert(-1, "Accounts")
-        nav.append("Logout")
+            # Insert admin-only pages before Change password
+            nav = [
+                "Landing / Student evaluation",
+                "Dashboard",
+                "Lecturer report",
+                "Sentiment analysis",
+                "Upload data",
+                "Model evaluation",
+                "Accounts",
+                "Change password",
+                "Logout",
+            ]
+        else:
+            nav.append("Logout")
     else:
         nav = ["Landing / Student evaluation", "Staff login"]
     choice = st.sidebar.radio("Navigate", nav)
@@ -266,6 +282,8 @@ def main():
     elif choice == "Lecturer report": page_report()
     elif choice == "Sentiment analysis": page_sentiment()
     elif choice == "Model evaluation": page_model()
+    elif choice == "Upload data" and page_upload:
+        page_upload(get_connection, DATABASE_PATH)
     elif choice == "Accounts" and page_accounts:
         page_accounts(get_connection, DATABASE_PATH)
     elif choice == "Change password" and page_change_password:
