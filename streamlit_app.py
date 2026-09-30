@@ -209,8 +209,8 @@ def page_model():
     user = st.session_state.get("user")
     if user and user.get("role") == "administrator":
         st.subheader("Retrain models")
-        st.write("Administrators can retrain SVM and Naive Bayes (same as Flask `/admin/retrain`).")
-        if st.button("Retrain classifiers", type="primary":
+        st.write("Administrators can retrain SVM and Naive Bayes (same as Flask /admin/retrain).")
+        if st.button("Retrain classifiers", type="primary"):
             with st.spinner("Retraining…"):
                 try:
                     run_retrain()
