@@ -1,160 +1,258 @@
-"""EvalAI Streamlit – Nigerian lecturer evaluation (12k synthetic + Model Evaluation)"""
-import json, random, hashlib
+"""EvalAI Streamlit — DB-linked, landing page, admin retrain (same as Flask)."""
+import os, sys, json
 from pathlib import Path
 import streamlit as st
 import pandas as pd
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.svm import LinearSVC
-from sklearn.naive_bayes import MultinomialNB
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
+from werkzeug.security import check_password_hash, generate_password_hash
 
-st.set_page_config(page_title="EvalAI", page_icon="🎓", layout="wide", initial_sidebar_state="expanded")
-BASE, DATA_DIR = Path(__file__).parent, Path(__file__).parent / "data"
-CSV_PATH = DATA_DIR / "synthetic_evaluations.csv"
-USERS = {"admin": hashlib.sha256(b"admin123").hexdigest(), "staff": hashlib.sha256(b"staff123").hexdigest()}
+BASE = Path(__file__).resolve().parent
+os.chdir(BASE)
+sys.path.insert(0, str(BASE))
+DATA = BASE / "data"
+DATA.mkdir(exist_ok=True)
 
-POS = ["Explains concepts clearly and with good examples.", "Breaks down difficult topics well.", "Always punctual and well prepared.", "Available for students after class.", "Fair grading with useful feedback.", "Uses WhatsApp group effectively for updates.", "Encourages questions and class participation.", "Shares slides and notes on the portal."]
-NEG = ["Explanations are confusing and rushed.", "Often late or cancels without notice.", "Hard to reach outside lecture hours.", "Grading feels unfair and opaque.", "Does not share materials or notes.", "Ignores student questions in class.", "Poor communication about tests and venues.", "Reads slides without proper explanation."]
-NEU = ["Follows the standard syllabus adequately.", "Punctuality and teaching are average.", "Communication is normal for a large class."]
-COURSES = [("CSC410","Special Computing"),("CSC412","Data Science & Big Data"),("CSC406","Cloud Computing"),("CSC101","Intro to Computer Science"),("CSC408","Machine Learning"),("CSC302","Database Design"),("CSC304","Operating Systems"),("CSC201","Data Structures"),("CSC401","Artificial Intelligence"),("CSC403","Computer Networks")]
-LECTURERS = ["Dr. Okafor","Dr. Adeyemi","Prof. Martins","Dr. Faith","Prof. Balogun","Dr. Chukwu","Dr. (Mrs) Adeleke","Dr. Okonkwo","Prof. Eze","Dr. Bello","Dr. Adebayo","Dr. Yusuf","Dr. Nwosu","Dr. Akinola","Prof. Ibrahim"]
+try:
+    from db import (
+        DATABASE_PATH, DEMO_LECTURERS, DEFAULT_SETTINGS,
+        get_connection, init_db, get_site_settings, get_lecturer_names,
+    )
+except Exception:
+    DATABASE_PATH = str(DATA / "feedback.db")
+    DEMO_LECTURERS = ["Dr. Okafor", "Dr. Adeyemi", "Prof. Martins", "Dr. Faith", "Prof. Balogun", "Dr. Chukwu"]
+    DEFAULT_SETTINGS = {
+        "announcement_banner": "2025/2026 Academic Session — Anonymous Student Evaluation of Teaching (SET) Portal Active",
+        "show_announcement": "true",
+        "landing_title": "Anonymous Lecturer Evaluation",
+        "landing_subtitle": "Share numerical ratings and free-text comments. Your name and student identity are never stored.",
+        "privacy_notice": "This form does not collect student name, matric number, or login details. Only the lecturer, course, rating, and comment are saved for analysis.",
+        "custom_guidelines": "Please evaluate objectively based on course engagement, syllabus delivery, and instructional clarity.",
+    }
+    import sqlite3
+    def get_connection(db_path=DATABASE_PATH):
+        con = sqlite3.connect(db_path, check_same_thread=False)
+        con.row_factory = sqlite3.Row
+        return con
+    def init_db(db_path=DATABASE_PATH):
+        os.makedirs(os.path.dirname(db_path) or ".", exist_ok=True)
+        db = get_connection(db_path)
+        db.execute("""CREATE TABLE IF NOT EXISTS feedback (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, student_name TEXT, matric_number TEXT,
+            lecturer_name TEXT NOT NULL, course TEXT NOT NULL, course_code TEXT,
+            rating INTEGER NOT NULL, comment TEXT NOT NULL, document_sentiment TEXT,
+            submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
+        db.execute("""CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL, role TEXT NOT NULL, lecturer_name TEXT, full_name TEXT)""")
+        db.execute("CREATE TABLE IF NOT EXISTS site_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        for k, v in DEFAULT_SETTINGS.items():
+            db.execute("INSERT OR IGNORE INTO site_settings (key, value) VALUES (?, ?)", (k, v))
+        if db.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0:
+            for u, p, r, ln, fn in [
+                ("admin", "admin123", "administrator", None, "System Administrator"),
+                ("okafor", "lecturer123", "lecturer", "Dr. Okafor", "Dr. Okafor"),
+                ("adeyemi", "lecturer123", "lecturer", "Dr. Adeyemi", "Dr. Adeyemi"),
+            ]:
+                db.execute("INSERT INTO users (username, password_hash, role, lecturer_name, full_name) VALUES (?,?,?,?,?)",
+                           (u, generate_password_hash(p), r, ln, fn))
+        db.commit(); db.close()
+    def get_site_settings():
+        s = dict(DEFAULT_SETTINGS)
+        try:
+            db = get_connection(); rows = db.execute("SELECT key, value FROM site_settings").fetchall()
+            for r in rows: s[r["key"]] = r["value"]
+            db.close()
+        except Exception: pass
+        return s
+    def get_lecturer_names():
+        try:
+            db = get_connection()
+            rows = db.execute("SELECT DISTINCT lecturer_name FROM users WHERE role='lecturer' AND lecturer_name IS NOT NULL").fetchall()
+            names = [r["lecturer_name"] for r in rows if r["lecturer_name"]]
+            db.close()
+            return sorted(names) if names else list(DEMO_LECTURERS)
+        except Exception:
+            return list(DEMO_LECTURERS)
 
-def generate_dataset(n=12000):
-    random.seed(42)
-    rows = []
-    for i in range(n):
-        target = random.choices(["positive","negative","neutral"], weights=[0.42,0.38,0.20])[0]
-        bank = {"positive": POS, "negative": NEG, "neutral": NEU}[target]
-        k = random.randint(1, 3)
-        comment = " ".join(random.sample(bank, min(k, len(bank))))
-        rating = {"positive": random.choice([4,5]), "negative": random.choice([1,2]), "neutral": 3}[target]
-        ccode, cname = random.choice(COURSES)
-        rows.append({"id": i+1, "lecturer_name": random.choice(LECTURERS), "course": cname, "course_code": ccode,
-                     "rating": rating, "comment": comment, "document_sentiment": target, "aspect_labels": "[]"})
-    return pd.DataFrame(rows)
+def analyze_comment(comment, rating=3):
+    try:
+        from ml_engine import run_analysis
+        return run_analysis(comment, rating)
+    except Exception:
+        return {"document_sentiment": "neutral"}
 
-def init_session():
-    if "logged_in" not in st.session_state:
-        st.session_state.logged_in = False
-        st.session_state.role = None
-        st.session_state.username = None
+def save_eval(lecturer, course, code, rating, comment):
+    lecturer, course, code, comment = (lecturer or "").strip(), (course or "").strip(), (code or "").strip(), (comment or "").strip()
+    if not lecturer or not course or not comment:
+        return False, "Please fill in lecturer, course, and comment."
+    try: r = int(rating)
+    except Exception: r = 3
+    ana = analyze_comment(comment, r)
+    sent = ana.get("document_sentiment", "neutral") if isinstance(ana, dict) else "neutral"
+    db = get_connection(DATABASE_PATH)
+    cols = [x[1] for x in db.execute("PRAGMA table_info(feedback)").fetchall()]
+    data = {"lecturer_name": lecturer, "course": course, "course_code": code, "rating": r, "comment": comment, "document_sentiment": sent}
+    if "student_name" in cols: data["student_name"] = "Anonymous"
+    if "matric_number" in cols: data["matric_number"] = "ANON"
+    keys = [k for k in data if k in cols]
+    db.execute(f"INSERT INTO feedback ({','.join(keys)}) VALUES ({','.join('?'*len(keys))})", [data[k] for k in keys])
+    db.commit(); db.close()
+    return True, None
 
-def login_form():
-    st.markdown("## 🎓 EvalAI Login")
-    st.caption("Lecturer Evaluation & Sentiment Analysis (Nigeria)")
-    with st.form("login"):
-        user = st.text_input("Username", placeholder="admin or staff")
-        pwd = st.text_input("Password", type="password")
-        if st.form_submit_button("Sign in", use_container_width=True):
-            h = hashlib.sha256(pwd.encode()).hexdigest()
-            if user in USERS and USERS[user] == h:
-                st.session_state.logged_in = True
-                st.session_state.username = user
-                st.session_state.role = "admin" if user == "admin" else "staff"
-                st.rerun()
-            else:
-                st.error("Invalid credentials. Try admin / admin123 or staff / staff123")
-
-@st.cache_data(show_spinner="Loading Nigerian evaluation dataset…")
-def load_dataset():
-    if CSV_PATH.exists():
-        return pd.read_csv(CSV_PATH)
-    DATA_DIR.mkdir(exist_ok=True)
-    df = generate_dataset(12000)
-    df.to_csv(CSV_PATH, index=False)
+def load_feedback():
+    db = get_connection(DATABASE_PATH)
+    df = pd.read_sql_query("SELECT * FROM feedback ORDER BY submitted_at DESC", db)
+    db.close()
     return df
 
-@st.cache_resource(show_spinner="Training SVM & Naive Bayes…")
-def train_models(df):
-    texts, labels = df["comment"].astype(str).tolist(), df["document_sentiment"].astype(str).tolist()
-    vec = TfidfVectorizer(max_features=4000, ngram_range=(1, 2), stop_words="english")
-    X = vec.fit_transform(texts)
-    Xtr, Xte, ytr, yte = train_test_split(X, labels, test_size=0.2, random_state=42, stratify=labels)
-    svm, nb = LinearSVC(random_state=42, dual="auto"), MultinomialNB()
-    svm.fit(Xtr, ytr); nb.fit(Xtr, ytr)
-    classes = ["positive", "neutral", "negative"]
-    ys, yn = svm.predict(Xte), nb.predict(Xte)
-    m = {"n_train": len(ytr), "n_test": len(yte), "classes": classes,
-         "svm": {"accuracy": float(accuracy_score(yte, ys)), "report": classification_report(yte, ys, output_dict=True), "cm": confusion_matrix(yte, ys, labels=classes).tolist()},
-         "nb": {"accuracy": float(accuracy_score(yte, yn)), "report": classification_report(yte, yn, output_dict=True), "cm": confusion_matrix(yte, yn, labels=classes).tolist()}}
-    return vec, {"svm": svm, "nb": nb}, m
+def authenticate(username, password):
+    db = get_connection(DATABASE_PATH)
+    row = db.execute("SELECT * FROM users WHERE username = ?", (username.strip(),)).fetchone()
+    db.close()
+    if row and check_password_hash(row["password_hash"], password):
+        return dict(row)
+    return None
 
-def predict(text, vec, models):
-    return models["svm"].predict(vec.transform([text]))[0] if text and models else "neutral"
+def load_metrics():
+    for p in [DATA / "model_evaluation_metrics.json", BASE / "model_evaluation_metrics.json"]:
+        if p.exists():
+            return json.loads(p.read_text())
+    return None
 
-def page_eval(df, vec, models):
-    st.header("📝 Student Evaluation")
-    with st.form("eval"):
+def run_retrain():
+    """Same as Flask admin_retrain: train_models.main() then reload models."""
+    from train_models import main as run_train
+    run_train()
+    try:
+        from ml_engine import load_all_models
+        load_all_models()
+    except Exception:
+        pass
+
+st.set_page_config(page_title="EvalAI — Lecturer Evaluation", page_icon="🎓", layout="wide", initial_sidebar_state="expanded")
+
+def page_landing():
+    settings = get_site_settings()
+    lecturers = get_lecturer_names()
+    if settings.get("show_announcement") == "true" and settings.get("announcement_banner"):
+        st.info(f"📢 {settings['announcement_banner']}")
+    st.markdown(f"### {settings.get('landing_title', 'Anonymous Lecturer Evaluation')}")
+    st.caption(settings.get("landing_subtitle", ""))
+    st.success(settings.get("privacy_notice", DEFAULT_SETTINGS["privacy_notice"]))
+    if settings.get("custom_guidelines"):
+        st.info(f"**Evaluation Guidelines:** {settings['custom_guidelines']}")
+    with st.form("anon"):
         c1, c2 = st.columns(2)
         with c1:
-            lecturer = st.selectbox("Lecturer", sorted(df["lecturer_name"].unique()))
-            course = st.selectbox("Course", sorted(df["course"].unique()))
+            lecturer = st.selectbox("Lecturer", [""] + list(lecturers))
+            course = st.text_input("Course", placeholder="e.g. Machine Learning")
         with c2:
-            rating = st.slider("Rating", 1, 5, 3)
-            comment = st.text_area("Feedback", height=120)
-        if st.form_submit_button("Submit", use_container_width=True):
-            if not comment.strip():
-                st.warning("Write a comment.")
+            code = st.text_input("Course code", placeholder="e.g. CSC401")
+            rating = st.selectbox("Rating", [5, 4, 3, 2, 1], index=2)
+        comment = st.text_area("Comment", height=130, placeholder="Write honestly about teaching clarity, assessment, availability...")
+        if st.form_submit_button("Submit anonymous evaluation", use_container_width=True):
+            ok, err = save_eval(lecturer, course, code, rating, comment)
+            if ok: st.success("Thank you. Your anonymous evaluation has been submitted.")
+            else: st.error(err or "Failed")
+
+def page_login():
+    st.header("Staff login")
+    with st.form("login"):
+        u = st.text_input("Username"); p = st.text_input("Password", type="password")
+        if st.form_submit_button("Sign in", use_container_width=True):
+            user = authenticate(u, p)
+            if user:
+                st.session_state.user = user; st.rerun()
             else:
-                st.success(f"Submitted! Sentiment: **{predict(comment, vec, models).upper()}**")
-                st.info(f"{lecturer} · {course} · {rating}/5")
+                st.error("Invalid username or password.")
+    st.caption("Demo: admin / admin123 · lecturers: okafor / lecturer123")
 
-def page_dash(df):
-    st.header("📊 Dashboard")
+def page_dashboard():
+    st.header("Dashboard")
+    df = load_feedback()
+    if df.empty:
+        st.warning("No feedback in the database yet."); return
     a,b,c,d = st.columns(4)
-    a.metric("Evaluations", f"{len(df):,}"); b.metric("Lecturers", df["lecturer_name"].nunique())
+    a.metric("Total", len(df)); b.metric("Lecturers", df["lecturer_name"].nunique())
     c.metric("Courses", df["course"].nunique()); d.metric("Avg rating", f"{df['rating'].mean():.2f}")
-    st.bar_chart(df["document_sentiment"].value_counts())
+    if "document_sentiment" in df.columns:
+        st.bar_chart(df["document_sentiment"].fillna("unknown").value_counts())
     st.bar_chart(df.groupby("lecturer_name")["rating"].mean().sort_values(ascending=False))
-    st.dataframe(df[["lecturer_name","course","rating","document_sentiment","comment"]].head(25), use_container_width=True)
+    st.dataframe(df.head(50), use_container_width=True)
 
-def page_sent(df, vec, models):
-    st.header("🔍 Sentiment Analysis")
-    text = st.text_area("Paste feedback", height=150)
-    if st.button("Analyse", use_container_width=True) and text.strip():
-        pred = predict(text, vec, models)
-        col = {"positive":"green","negative":"red","neutral":"orange"}.get(pred,"gray")
-        st.markdown(f"### Predicted: :{col}[**{pred.upper()}**]")
-
-def page_report(df):
-    st.header("👤 Lecturer Report")
-    chosen = st.selectbox("Lecturer", sorted(df["lecturer_name"].unique()))
-    sub = df[df["lecturer_name"]==chosen]
+def page_report():
+    st.header("Lecturer report")
+    df = load_feedback()
+    if df.empty: st.warning("No feedback yet."); return
+    names = sorted(df["lecturer_name"].dropna().unique())
+    user = st.session_state.get("user")
+    if user and user.get("role") == "lecturer" and user.get("lecturer_name") in names:
+        chosen = st.selectbox("Lecturer", names, index=names.index(user["lecturer_name"]))
+    else:
+        chosen = st.selectbox("Lecturer", names)
+    sub = df[df["lecturer_name"] == chosen]
     st.metric("Evaluations", len(sub)); st.metric("Avg rating", f"{sub['rating'].mean():.2f}")
-    st.bar_chart(sub["document_sentiment"].value_counts())
-    for _, r in sub.head(12).iterrows():
-        st.markdown(f"- **{r['document_sentiment']}** ({r['rating']}/5): {r['comment'][:200]}")
+    if "document_sentiment" in sub.columns:
+        st.bar_chart(sub["document_sentiment"].fillna("unknown").value_counts())
+    for _, r in sub.head(25).iterrows():
+        st.markdown(f"- **{r.get('document_sentiment','—')}** ({r['rating']}/5): {r['comment'][:280]}")
 
-def page_model(df, m):
-    st.header("📈 Model Evaluation – SVM vs Naive Bayes")
-    st.success(f"Dataset: **{len(df):,}** · Train {m['n_train']:,} / Test {m['n_test']:,}")
-    c1, c2 = st.columns(2)
-    with c1:
-        st.subheader("SVM"); st.metric("Accuracy", f"{m['svm']['accuracy']:.4f}")
-        st.dataframe(pd.DataFrame(m["svm"]["cm"], index=m["classes"], columns=m["classes"]), use_container_width=True)
-        st.json(m["svm"]["report"])
-    with c2:
-        st.subheader("Naive Bayes"); st.metric("Accuracy", f"{m['nb']['accuracy']:.4f}")
-        st.dataframe(pd.DataFrame(m["nb"]["cm"], index=m["classes"], columns=m["classes"]), use_container_width=True)
-        st.json(m["nb"]["report"])
+def page_sentiment():
+    st.header("Sentiment / aspect analysis")
+    text = st.text_area("Student comment", height=140)
+    rating = st.slider("Rating", 1, 5, 3)
+    if st.button("Analyse", use_container_width=True) and text.strip():
+        st.json(analyze_comment(text, rating))
+
+def page_model():
+    st.header("Model evaluation — SVM vs Naive Bayes")
+    st.caption("Comparative evaluation (existing training pipeline).")
+    user = st.session_state.get("user")
+    if user and user.get("role") == "administrator":
+        st.subheader("Retrain models")
+        st.write("Administrators can retrain SVM and Naive Bayes (same as Flask `/admin/retrain`).")
+        if st.button("Retrain classifiers", type="primary":
+            with st.spinner("Retraining…"):
+                try:
+                    run_retrain()
+                    st.success("Models retrained successfully! Hyperparameters tuned and evaluation metrics updated.")
+                    st.cache_data.clear()
+                except Exception as e:
+                    st.error(f"Retraining error: {e}")
+        st.divider()
+    metrics = load_metrics()
+    if not metrics:
+        st.warning("model_evaluation_metrics.json not found. Run retrain to generate metrics.")
+        return
+    doc = metrics.get("document_level", {})
+    svm, nb = doc.get("svm", {}), doc.get("naive_bayes", {})
+    st.write(f"Majority baseline: **{doc.get('majority_baseline_accuracy', '—')}**")
+    st.dataframe(pd.DataFrame([
+        {"Model": "SVM", "Accuracy": svm.get("accuracy"), "Macro F1": svm.get("macro_f1"), "Weighted F1": svm.get("weighted_f1")},
+        {"Model": "Naive Bayes", "Accuracy": nb.get("accuracy"), "Macro F1": nb.get("macro_f1"), "Weighted F1": nb.get("weighted_f1")},
+    ]), use_container_width=True)
+    if metrics.get("aspect_level"):
+        st.subheader("Aspect-level"); st.dataframe(pd.DataFrame(metrics["aspect_level"]), use_container_width=True)
 
 def main():
-    init_session()
-    if not st.session_state.logged_in:
-        login_form(); st.caption("Demo: **admin / admin123** or **staff / staff123**"); return
+    if "user" not in st.session_state:
+        st.session_state.user = None
+    init_db(DATABASE_PATH)
     st.sidebar.title("EvalAI")
-    st.sidebar.markdown(f"**{st.session_state.username}** ({st.session_state.role})")
-    page = st.sidebar.radio("Navigate", ["Student Evaluation","Dashboard","Sentiment Analysis","Lecturer Report","Model Evaluation","Logout"])
-    df = load_dataset()
-    vec, models, metrics = train_models(df)
-    if page == "Logout":
-        st.session_state.logged_in = False; st.session_state.role = None; st.session_state.username = None; st.rerun()
-    elif page == "Student Evaluation": page_eval(df, vec, models)
-    elif page == "Dashboard": page_dash(df)
-    elif page == "Sentiment Analysis": page_sent(df, vec, models)
-    elif page == "Lecturer Report": page_report(df)
-    elif page == "Model Evaluation": page_model(df, metrics)
+    user = st.session_state.user
+    if user:
+        st.sidebar.markdown(f"**{user.get('full_name') or user['username']}** ({user['role']})")
+        nav = ["Landing / Student evaluation", "Dashboard", "Lecturer report", "Sentiment analysis", "Model evaluation", "Logout"]
+    else:
+        nav = ["Landing / Student evaluation", "Staff login"]
+    choice = st.sidebar.radio("Navigate", nav)
+    if choice == "Landing / Student evaluation": page_landing()
+    elif choice == "Staff login": page_login()
+    elif choice == "Logout":
+        st.session_state.user = None; st.rerun()
+    elif choice == "Dashboard": page_dashboard()
+    elif choice == "Lecturer report": page_report()
+    elif choice == "Sentiment analysis": page_sentiment()
+    elif choice == "Model evaluation": page_model()
 
 if __name__ == "__main__":
     main()
