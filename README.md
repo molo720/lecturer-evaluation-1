@@ -1,24 +1,24 @@
 # EvalAI – Lecturer Evaluation (Streamlit)
 
-Nigerian synthetic student-lecturer evaluation system.
+Streamlit frontend linked to the existing SQLite database and trained models.
 
-## Deploy on Streamlit Community Cloud
+## Deploy (Streamlit Community Cloud)
 
 - **Repository:** molo720/lecturer-evaluation-1
-- **Main file:** streamlit_app.py
-- **Branch:** main
-
-## Login (demo)
-
-- admin / admin123
-- staff / staff123
+- **Main file path:** `streamlit_app.py`
+- **Branch:** `main`
 
 ## Features
 
-- Student Evaluation form
-- Dashboard
-- Sentiment Analysis
-- Lecturer Report
-- Model Evaluation (SVM vs Naive Bayes)
+- Landing page (same settings as Flask landing.html)
+- Anonymous student evaluation → feedback table
+- Staff login (users table)
+- Dashboard & lecturer report
+- Sentiment analysis via existing ml_engine
+- Model evaluation (SVM vs Naive Bayes)
+- **Admin retrain** → train_models.main() (same as Flask /admin/retrain)
 
-Dataset: 12,000 synthetic Nigerian evaluations (auto-generated on first run if CSV is missing).
+## Demo logins
+
+- admin / admin123
+- Lecturers: okafor, adeyemi, … / lecturer123
